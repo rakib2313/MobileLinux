@@ -1,0 +1,30 @@
+#!/bin/sh
+# MobileLinux XFCE session startup for TigerVNC. Runs INSIDE the Debian guest.
+# Installed to ~/.vnc/xstartup by scripts/guest/user-setup.sh (an existing file is never overwritten).
+
+unset SESSION_MANAGER
+unset DBUS_SESSION_BUS_ADDRESS
+
+export XDG_SESSION_TYPE=x11
+export XDG_CURRENT_DESKTOP=XFCE
+export XDG_CONFIG_DIRS="${XDG_CONFIG_DIRS:-/etc/xdg}"
+export NO_AT_BRIDGE=1
+# PRoot has no GPU acceleration: use software rendering for OpenGL clients.
+export LIBGL_ALWAYS_SOFTWARE=1
+
+# systemd is not available, so create a private runtime dir ourselves.
+if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
+  XDG_RUNTIME_DIR="/tmp/runtime-$(id -u)"
+  export XDG_RUNTIME_DIR
+fi
+mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
+
+if [ -r "$HOME/.Xresources" ]; then
+  xrdb "$HOME/.Xresources"
+fi
+
+if command -v dbus-launch >/dev/null 2>&1; then
+  exec dbus-launch --exit-with-session startxfce4
+else
+  exec startxfce4
+fi
