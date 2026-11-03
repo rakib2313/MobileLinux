@@ -1,55 +1,55 @@
-# Security policy
+# Security Policy
 
-MobileLinux is a hobby/educational Linux **userspace** running in Termux with PRoot. It has not been
-security-audited and must not be described as "secure", "hardened" or "production-ready".
+MobileLinux is **not** a security sandbox. It is a convenience layer (Termux + PRoot) on top of
+Android. It is unofficial and not affiliated with Linux, Debian, Termux or Android.
 
 ## Reporting a vulnerability
 
-Please do not post exploit details in a public issue. Use GitHub's private reporting if it is enabled
-for this repository: <https://github.com/rakib2313/MobileLinux/security/advisories/new>. If that page is
-unavailable, open a public issue at <https://github.com/rakib2313/MobileLinux/issues> that says you have a
-security report *without* technical details, and ask for a private channel. No private e-mail address is published.
+Please **do not open a public issue** for security problems. Use GitHub's
+*"Report a vulnerability"* (Security tab -> Advisories) on
+https://github.com/rakib2313/MobileLinux. Include steps to reproduce, the affected version and
+the impact. Never include passwords, API keys or tokens in a report.
 
-## Secrets
+## Secret-handling rules
 
-* Never commit API keys, VNC passwords, code-server passwords or tokens. `.gitignore` excludes common
-  secret files, but you are responsible for checking `git status` before every commit.
-* The VNC password lives only in the guest at `~/.vnc/passwd` (mode 600), created by the VNC tool. Scripts never print it.
-* `~/.config/mobilelinux/` is created with mode 700 and `config.env` with mode 600. Keep `ai.env` at 600.
-* `scripts/ai-assistant.sh` passes the key to curl through a file descriptor (not on the command line) and
-  redacts it from error output. Prompts and piped data **leave your device** and may be billed.
-* If a secret was ever committed, revoke/rotate it; deleting the commit later is not enough.
+| Rule | How it is done |
+|------|----------------|
+| No hardcoded secrets | Nothing in the repo contains passwords, tokens or API keys; CI greps for common token formats. |
+| Runtime prompting | VNC and AI credentials are prompted with hidden input from the real terminal. |
+| Templates only | `.env.example` documents settings; the real `.env` is git-ignored and set to mode `600`. |
+| Safe parsing | `.env` is **parsed, never `source`d**; only `MLD_[A-Z0-9_]+` keys are accepted. |
+| Strict permissions | `~/.mld` = `700`; `~/.vnc/passwd`, `ai.env`, code-server `config.yaml` and the log file = `600`. |
+| Short-lived handoff | A non-interactive VNC password goes through a `0600` file that is deleted after one use - never through command-line arguments. |
+| Logs | Passwords and keys are never written on purpose. Log lines shown on screen and diagnostics are passed through a masking filter, but **always read a log before sharing it**. |
 
-## PRoot is not a strong sandbox
+If you commit a secret by accident: **revoke/rotate it immediately**, then purge the history.
 
-PRoot runs Linux programs in userspace on the **Android kernel**. It is a compatibility layer, not a security
-boundary comparable to a VM. "root" inside the guest is not Android root, but guest programs run as your Termux
-app user and can reach whatever Termux can reach (Termux files, network, shared storage if granted). Treat
-anything you run in the guest as having the same trust level as Termux itself. Do not run untrusted software.
-The desktop user created by the installer is unprivileged mainly to limit accidents.
+## Design decisions and limits
 
-## Local services and network exposure
+* **VNC listens on `127.0.0.1` only.** VNC password authentication does **not** encrypt traffic and
+  only uses the first 8 characters. Do not expose it; if you ever need remote access, tunnel it
+  (SSH/VPN). `MLD_VNC_LAN=1` exists but is discouraged.
+* **code-server binds to `127.0.0.1:8080` with password auth.** Other Android apps share the
+  loopback interface, so the (random) password matters.
+* **Browser sandboxes are ON by default.** PRoot has no user namespaces or seccomp support, so
+  Chromium and Firefox often cannot start with their sandboxes. The installer asks you whether to
+  disable them (default **no**); `--allow-no-sandbox` skips the question. Change it any time:
+  `mld browser-sandbox on|off|status`. With sandboxes disabled, a malicious web page has fewer
+  barriers: only use trusted sites and keep banking and primary-email logins in your phone's normal browser.
+* **No root desktop session.** Applications run as the unprivileged guest user (password-locked).
+  Root is used only by the installer inside the PRoot guest. PRoot "root" is not real root.
+* **Supply chain.** Packages come from Termux and Debian repositories (signature-checked by apt).
+  code-server is downloaded over HTTPS from its GitHub releases; this installer prints the SHA-256
+  of the file but does **not** verify it against a publisher checksum. Reading the scripts first
+  (clone, then run) is recommended over `curl | bash`.
+* **Termux theme.** Only `~/.termux/colors.properties` is changed, after explicit consent, with a
+  timestamped backup that is never overwritten.
+* **AI helper (optional).** Prompts - and, for `ai fix`, the last lines of a command's output - are
+  sent to the provider you configure. That data leaves your phone and may cost money.
 
-* VNC is started with `-localhost yes`: it binds to loopback only. `setup-vnc.sh status` warns if it sees otherwise.
-* Other apps on the same phone can still connect to loopback ports; the VNC password is the only barrier.
-* code-server (optional) defaults to `127.0.0.1:8080` with password auth. Do not change it to `0.0.0.0` without TLS and a reason.
-* Development servers: bind them to `127.0.0.1` (for example `python3 -m http.server 8000 --bind 127.0.0.1`).
+## Contributor checklist
 
-## VNC transport security
-
-VNC password authentication proves who you are but **does not encrypt** the session (and only the first 8
-password characters count). Keeping the server on loopback avoids exposing it. If you ever need remote access,
-tunnel it through SSH (or another encrypted tunnel) and keep the VNC port closed to the network.
-
-## Browsers
-
-Chromium and Firefox use OS sandboxes that frequently fail under PRoot. MobileLinux never disables a sandbox
-automatically. `--no-sandbox` for Chromium is available only by explicit opt-in
-(`MOBILELINUX_CHROMIUM_NO_SANDBOX=1`) and weakens protection against malicious web pages. Prefer the Android
-browser for general browsing and for opening local servers.
-
-## Supply chain
-
-Packages come from Termux repositories, proot-distro and Debian apt. Optional code-server installs through npm,
-which verifies package integrity. This project does not download or run unsigned scripts as root and does not
-ship checksums it cannot verify. Always read scripts before running them (`less scripts/install.sh`).
+- Run `shellcheck -x -S warning` on every script you touch.
+- Quote all expansions; use `set -Eeuo pipefail`; avoid `eval`.
+- Never put secrets in argv, environment dumps or logs.
+- Validate any user-controlled value before using it in a path, regex or command.

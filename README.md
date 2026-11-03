@@ -1,193 +1,247 @@
+<div align="center">
+
+![MobileLinux](assets/banners/banner.svg)
+
 # MobileLinux
 
-A modular **Linux desktop environment for Android phones**, built from shell scripts that set up a
-**Debian** userspace with **XFCE4** and **TigerVNC** inside **Termux** using **PRoot-Distro**. You view the
-desktop with a VNC client app on the same phone.
+**A lightweight Linux desktop + web-dev toolkit that runs inside Termux on Android.**
+Termux · PRoot Debian · XFCE4 · TigerVNC · VS Code (code-server) · optional AI helper
 
-> **This is a Termux/PRoot Linux userspace — not a standalone Android replacement OS and not a custom ROM.**
-> It runs *on top of* Android. It does not need root. Repository: <https://github.com/rakib2313/MobileLinux>
+[![ShellCheck](https://github.com/rakib2313/MobileLinux/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/rakib2313/MobileLinux/actions/workflows/shellcheck.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+![Version](https://img.shields.io/badge/version-2.0.0-informational)
 
-Aimed at beginner web developers who want a Linux desktop and common dev tools on an ARM64 phone.
+</div>
 
-**Status:** the scripts were reviewed and syntax-checked on a PC. They have **not** been tested on a real
-Android/Termux device by the author of this generator. Expect to troubleshoot, and please report what you find.
+```text
+ __  __       _     _ _
+|  \/  | ___ | |__ (_) | ___
+| |\/| |/ _ \| '_ \| | |/ _ \
+| |  | | (_) | |_) | | |  __/
+|_|  |_|\___/|_.__/|_|_|\___|
+ _     _
+| |   (_)_ __  _   ___  __
+| |   | | '_ \| | | \ \/ /
+| |___| | | | | |_| |>  <
+|_____|_|_| |_|\__,_/_/\_\
+```
 
-## Features
+> **What this is not:** MobileLinux is not an operating system, an Android replacement, a custom ROM
+> or a strong security sandbox. It runs a Debian userland through PRoot inside the Termux app.
+> It is unofficial and not affiliated with Linux, Debian, Termux or Android.
 
-* One installer (`scripts/install.sh`) that is safe to re-run and does not delete guest data.
-* Debian guest via PRoot-Distro, minimal XFCE4 desktop, TigerVNC bound to **localhost only**.
-* Three hardware profiles (`low`, `mid`, `high`) with automatic recommendation and manual override.
-* Dev tools from Debian packages: Git, curl, wget, Python 3, Node.js, npm, plus small utilities.
-* Optional: Chromium or Firefox ESR (if packages exist and work), code-server via npm, AI helper script.
-* No systemd, Docker or root required.
+> **Test status:** the scripts are syntax-checked automatically. They have **not** been verified
+> on a real device by the generator. Please report what works or fails on your phone (see
+> *Reporting an issue*).
 
-## Known limitations (please read)
+## What you get
 
-* PRoot translates system calls in userspace: it is slower than native Linux, has no systemd, no Docker,
-  limited kernel features, and **no GPU acceleration** (software rendering).
-* Android may kill Termux in the background (phantom-process limits, battery optimisation). Long sessions can be interrupted.
-* VNC is not encrypted (see Security). Remote-desktop latency and text sharpness depend on the device and client.
-* Browsers often fail under PRoot because their sandboxes need kernel features Android may block.
-  The **Android browser** is the practical way to open local web apps. Debian package versions can be older than upstream.
-* Performance, heat/thermal throttling and battery drain depend on your device, Android version, free storage,
-  workload and background restrictions. **No profile can guarantee smooth performance.**
+A one-command installer that sets up a Linux desktop (viewed through a VNC app) with Chromium,
+Firefox ESR, Node.js, Python 3, PHP CLI, Git and VS Code (code-server). It picks a `low`, `mid` or
+`high` profile from your RAM. Primary target: **ARM64 (aarch64)** phones.
 
-## Supported architecture and prerequisites
+## Requirements
 
-* **ARM64 / aarch64 only.** The installer refuses other architectures with an explanation.
-* A current Termux. Install it from the sources the Termux project recommends (F-Droid or the project's GitHub
-  releases). Old builds from other stores are outdated and their package repositories may no longer work,
-  which causes `pkg` errors. Do not mix builds from different sources (their signing keys differ).
-  Check the Termux wiki for current guidance.
-* Estimates only (not measured): **4+ GB** free storage for the base desktop (more with apps),
-  **~4 GB RAM** as a practical floor (the low profile targets this), a stable network for the first install.
-* A VNC client app on Android (any client that supports plain VNC to `localhost`).
+| Item | Requirement |
+|------|-------------|
+| Android | 8.0+ (Android 12+: see the *phantom process* note under Troubleshooting) |
+| Termux | Latest from **F-Droid** or **GitHub** (the Play Store build is outdated) |
+| Storage | 5 GB free recommended (3 GB minimum) |
+| RAM | 3 GB+ (4 GB comfortable) |
+| VNC app | RealVNC Viewer, bVNC or similar |
 
-## Where each command runs
+## Install (review first)
 
-| Label | Where | How to get there |
-|-------|-------|------------------|
-| **[Termux]** | Android / Termux host | open the Termux app |
-| **[Guest]** | Debian inside PRoot | `bash scripts/shell.sh` (from Termux) |
-| **[VNC client]** | the VNC app on Android | connect to `localhost:5901` |
-
-Almost everything is run from **[Termux]**; the scripts call into the guest for you.
-
-## Install
-
-**[Termux]** install prerequisites and clone:
+Run these **in Termux**:
 
 ```bash
-pkg update && pkg upgrade
 pkg install -y git
 git clone https://github.com/rakib2313/MobileLinux.git
 cd MobileLinux
-```
-
-Inspect the installer before running it (there is intentionally no `curl | bash` one-liner):
-
-```bash
-less scripts/install.sh
-```
-
-**[Termux]** run it (the optional flags are listed with `--help`):
-
-```bash
+less scripts/install.sh          # read it first (press q to quit)
 bash scripts/install.sh
 ```
 
-Other examples: `bash scripts/install.sh --profile low --skip-apps`, `bash scripts/install.sh --browser none`,
-`bash scripts/install.sh --code-server`, `bash scripts/install.sh --yes`.
+A one-line `curl | bash` bootstrap also exists inside `install.sh`, but reading the code before
+running it is safer. Installation takes roughly 10-30 minutes.
 
-### Choose a hardware profile
+## The installer interface
 
-| Profile | Default resolution | Intent |
-|---------|--------------------|--------|
-| low  | 1280x720  | small devices (~4 GB RAM class); minimal extras; no browser by default |
-| mid  | 1600x900  | balanced; a few extra desktop apps; Chromium attempted |
-| high | 1920x1080 | more conveniences; compositing on |
+The installer shows a text logo, a short welcome, and **8 numbered phases**:
 
-`auto` picks from total RAM read from `/proc/meminfo`. That is best effort: phones report less than their
-marketing RAM and detection can be wrong, so always override if the result seems off.
+| # | Phase | Runs in |
+|---|-------|---------|
+| 1 | Welcome and device checks (Termux, CPU, commands, storage, RAM, network) | Termux |
+| 2 | Termux dependencies (`pkg update`, `proot-distro`, ...) | Termux |
+| 3 | Debian PRoot setup (reuses an existing Debian; never deletes it) | Termux + Debian |
+| 4 | Desktop and VNC (XFCE4, TigerVNC, browsers, VNC password) | Debian |
+| 5 | Development tools (Node.js, Python, PHP, Git, code-server) | Debian |
+| 6 | Optional AI helper (asks first) | Debian |
+| 7 | Optional Termux theme (asks first) | Termux |
+| 8 | Final verification and next-step commands | Termux + Debian |
 
-**[Termux]**
+Long steps show a spinner with elapsed time and the last log line. A failed step is never reported
+as success: the last log lines are printed, and the installer stops with an **error screen** that
+names the phase, whether the failure was in **Termux** or **Debian**, the step, the exit code, the
+log location and a next step. Optional components (code-server, browsers, extensions, AI helper,
+theme) are reported separately from required ones; the core install stays usable if they fail.
+
+### Display options (animation and colour)
+
+| Option | Effect |
+|--------|--------|
+| `--no-animation` (or `MLD_NO_ANIM=1`) | No logo reveal or spinner; plain progress lines |
+| `--no-color` (or `NO_COLOR=1`, `MLD_NO_COLOR=1`) | No colours |
+| `--ascii` (or `MLD_ASCII=1`) | Plain ASCII symbols instead of Unicode |
+| `-v`, `--verbose` | Stream live command output instead of a spinner |
+
+Animation and colour are used only on an interactive terminal; when output is piped or
+`TERM=dumb`, the installer prints plain text. On very narrow terminals (under ~34 columns) the logo
+becomes a one-line title. Actual appearance varies by terminal, font, screen width and Termux version.
+
+### Other installer options
+
+`--profile low|mid|high|auto`, `--yes`, `--no-code-server`, `--ai` / `--no-ai`, `--theme` /
+`--no-theme`, `--allow-no-sandbox`, `--refresh`, `--help`. `--yes` never grants consent for the
+theme or the browser-sandbox change.
+
+## Daily use
+
+| Command (in Termux) | What it does |
+|---------|--------------|
+| `mld start` | Start the desktop |
+| `mld stop` / `mld restart` | Stop / restart it |
+| `mld status` | Show whether it is running |
+| `mld passwd` | Change the VNC password |
+| `mld resolution 1280x720` | Change screen size (then `mld restart`) |
+| `mld shell` / `mld root` | Terminal inside Linux (user / root) |
+| `mld ai ...` | Optional AI helper |
+| `mld code-password` | Show the VS Code login password |
+| `mld browser-sandbox on\|off\|status` | Browser sandbox choice (see Security) |
+| `mld theme apply\|restore\|status\|backups` | Optional Termux theme |
+| `mld diagnose [--log] [--save] [--no-guest]` | Local diagnostics |
+| `mld log [N]` | Show the last N log lines |
+| `mld autostart on\|off` | Start at boot (needs the Termux:Boot app) |
+| `mld update` | Pull the latest version and re-apply configs |
+| `mld uninstall` | Remove what was installed |
+
+**Connect:** after `mld start`, open your VNC viewer app and connect to **`localhost:5901`** with
+your VNC password. Stop with `mld stop`. VNC listens on this phone only; VNC password login does
+**not** encrypt traffic.
+
+## Optional Termux theme
+
+The theme changes **only the colours of the Termux terminal** (`~/.termux/colors.properties`). It
+does **not** change the Android system theme, the XFCE desktop, or your VNC viewer app. No font is
+downloaded or changed.
 
 ```bash
-bash scripts/select-profile.sh            # show detection and options
-bash scripts/select-profile.sh low        # or mid / high / auto
-bash scripts/setup-vnc.sh resolution 1280x720   # custom resolution; 'reset' removes it
-bash scripts/setup-vnc.sh restart         # apply
+mld theme apply       # asks for consent, backs up your file, installs the theme
+mld theme restore     # puts your previous file back
+mld theme status      # exit code 0 = MobileLinux theme active
+mld theme backups     # list backups
 ```
 
-Profile files live in `configs/profiles/`. To apply package changes (extras) after switching, re-run `bash scripts/install.sh --skip-upgrade`.
+* Backups live in `~/.termux/mobilelinux-backups/` as `colors.properties.<YYYYMMDD-HHMMSS>`.
+  An existing backup is never overwritten, and this project never deletes backups.
+* If you edit `colors.properties` after applying the theme, `restore` first saves your edited file
+  as `colors.properties.before-restore-<timestamp>` and asks before replacing it.
+* The record of what was backed up is `~/.termux/mobilelinux-backups/state`.
+* The installer applies the theme only if you say yes (or pass `--theme`). Skipping or a failure
+  does not affect the Linux installation.
+* If Termux does not reload automatically, run `termux-reload-settings` or fully close and reopen
+  Termux.
 
-## Use the desktop
+## Diagnostics, logs and reporting an issue
 
-**[Termux]**
-
-```bash
-bash scripts/setup-vnc.sh passwd     # once: choose a VNC password (only the first 8 characters count)
-bash scripts/setup-vnc.sh start
-bash scripts/setup-vnc.sh status
-bash scripts/setup-vnc.sh stop
-```
-
-**[VNC client]** create a connection to host `localhost` (or `127.0.0.1`), port `5901` (display `:1`), and enter the
-password you chose. Optionally keep the device awake and exempt Termux from battery optimisation to reduce kills.
-
-## Web development
-
-**[Guest]** (`bash scripts/shell.sh`):
-
-```bash
-mkdir -p ~/site && cd ~/site
-echo '<h1>Hello</h1>' > index.html
-python3 -m http.server 8000 --bind 127.0.0.1
-```
-
-Then open `http://127.0.0.1:8000` in the **Android browser** (PRoot shares the phone's network). Node tools work the
-same way (`node --version`, `npm init`). Bind dev servers to `127.0.0.1`.
-
-**code-server (optional)** — installed only with `--code-server`, via npm; compatibility with Debian's Node.js is not
-guaranteed and untested. **[Guest]**: `~/.local/bin/code-server`, then open `http://127.0.0.1:8080` in the Android browser.
-Its password is in `~/.config/code-server/config.yaml`. A desktop VS Code build is not assumed to work in PRoot.
-
-## Browsers
-
-Use the Android browser by default. Optional in-guest browsers: `--browser chromium` (launcher: `mobilelinux-chromium`,
-flags in `configs/chromium/flags.conf`) or `--browser firefox`. If a browser crashes at start, its sandbox probably
-cannot work under PRoot. MobileLinux does **not** disable sandboxes for you. For Chromium only, you may opt in with
-`MOBILELINUX_CHROMIUM_NO_SANDBOX=1 mobilelinux-chromium` — understand that this weakens protection against malicious
-pages, and prefer the Android browser instead.
-
-## Optional AI helper
-
-`scripts/ai-assistant.sh` is a small curl+jq wrapper for an OpenAI-chat-style endpoint you configure
-(`AI_API_ENDPOINT`, `AI_MODEL`, `AI_API_KEY`; see the header of the script and `.env.example`). Nothing else needs it.
-Prompts and piped files are sent to that provider, may incur costs and need internet. Do not send secrets.
-
-## Security and privacy
-
-Summary (details in [SECURITY.md](SECURITY.md)): PRoot is not a strong sandbox; VNC runs on loopback only; VNC
-password auth is **not encryption** — use an SSH tunnel or another encrypted tunnel for any remote access; never commit
-secrets; read scripts before running them.
+* **Log file:** `~/.cache/mld/mld.log` (mode `600`; override with `MLD_LOG_FILE`). If it cannot be
+  written, the installer warns and falls back to `$TMPDIR`, then to live output only.
+  View it with `mld log` or `tail -n 100 ~/.cache/mld/mld.log`.
+* **Diagnostics:** `mld diagnose` (or `bash scripts/diagnose.sh`) prints Termux detection, CPU
+  architecture, RAM and storage (with their limits), commands, PRoot-Distro/Debian status,
+  VNC status and the component checks inside Debian. Add `--log` to include the last 40 log lines,
+  `--save` to also write `~/mld-diagnostics-<time>.txt` (mode `600`). **Nothing is uploaded.**
+* **Before sharing:** open the output or log yourself, and delete anything private (passwords,
+  tokens, e-mail addresses, personal paths or device identifiers). A masking filter hides common
+  secret patterns, but it is not a guarantee.
+* **Reporting:** open an issue at https://github.com/rakib2313/MobileLinux/issues with your
+  Android version, device model, Termux version/source, the phase and step that failed, and the
+  smallest relevant part of the (redacted) log. Never post passwords, API keys or tokens.
 
 ## Troubleshooting
 
-* **`pkg` errors / 404 / mirror problems:** run `termux-change-repo`, then `pkg update && pkg upgrade`. Make sure
-  your Termux is a current one (see prerequisites).
-* **Installer stops or apt fails:** it is safe to re-run `bash scripts/install.sh`. Check `df -h` for space. Under PRoot
-  `apt` can print sandbox warnings; if downloads fail with `seteuid`/`setgroups` errors, search the proot-distro issue tracker for the current workaround.
-* **VNC client cannot connect:** `bash scripts/setup-vnc.sh status`; make sure it is running and the client uses `localhost:5901`.
-  Read the log in the guest: `bash scripts/shell.sh` then `ls ~/.vnc/*.log`. Stale locks are cleaned automatically on `start`.
-  Grey screen: check `~/.vnc/*.log` for errors from `xstartup`.
-* **Session disappears after a while:** Android killed Termux. Disable battery optimisation for Termux, keep it in the
-  foreground, and consider `termux-wake-lock` (Termux feature). Some vendors are aggressive regardless.
-* **Browser crashes:** see Browsers. Use the Android browser.
-* **Slow or hot device:** use `low`, lower the resolution (`setup-vnc.sh resolution 1024x600`), close apps, avoid heavy builds.
-* **Storage full:** `du -sh $PREFIX/var/lib/proot-distro/installed-rootfs/*`; back up and remove what you do not need.
+| Problem | Fix |
+|---------|-----|
+| Installer stopped | Read the error screen (phase, Termux vs Debian, step, exit code). Re-run `bash scripts/install.sh`: finished steps and an existing Debian are reused; nothing is deleted. |
+| Partial installation | Re-run the installer. Run `mld diagnose` to see which components are missing. Required components must pass phase 8 before the installer says "complete". |
+| Network check failed | Switch to Wi-Fi, check `curl -I https://deb.debian.org`, re-run. |
+| `The Debian container was not created` | Run `proot-distro install debian` to see the real error, then re-run the installer. |
+| Installer looks stuck | Use `--verbose`, or in a second Termux session: `tail -f ~/.cache/mld/mld.log`. Desktop and development package steps have no hard deadline by default; `MLD_DESKTOP_TIMEOUT` and `MLD_DEVTOOLS_TIMEOUT` set seconds, and `MLD_APT_TIMEOUT` sets a guest apt deadline (0 disables). Other steps can still have time limits. A quiet log does not prove a hang. |
+| Spinner/colours look wrong | Use `--no-animation --no-color --ascii`. |
+| VNC viewer cannot connect | `mld status`; connect to `localhost:5901`; check `~/.mld/run/desktop.log`. |
+| Grey screen / no panel | `mld restart`. Still broken: `mld shell`, then `rm -rf ~/.config/xfce4`, and restart. |
+| Browser will not start | PRoot cannot run browser sandboxes. Read the security notes, then decide: `mld browser-sandbox on`. |
+| Desktop dies in the background (Android 12+) | Run `termux-wake-lock`; enable *Developer options -> Disable child process restrictions*, or via ADB: `adb shell device_config put activity_manager max_phantom_processes 2147483647`. |
+| code-server missing | It is optional (needs github.com and an ARM64/x86_64 CPU). Re-run the installer later. |
+| `apt` errors inside Linux | Close other package managers first. Enter Debian with `proot-distro login debian`, run `dpkg --configure -a` and `apt-get -f install`, then exit and retry. Never remove dpkg lock files while a package manager may be running. |
+| VNC password tool missing | In Debian as root run `apt-get update && apt-get install tigervnc-tools`, then retry. The installer checks `tigervncpasswd` and `vncpasswd`. |
 
-## Uninstall and cleanup
+Performance is limited: PRoot adds overhead, there is no GPU acceleration, and phones throttle when
+hot or on low battery.
 
-**[Termux]** `bash scripts/uninstall.sh` removes the Debian guest. **This permanently deletes everything inside it,
-including `/home/mluser` (your projects).** Back up first (copy files out, or `proot-distro backup debian --output ...` if
-your proot-distro supports it). The script asks you to type the guest name before deleting. The repository directory and
-`pkg` packages are left alone; remove them yourself if you wish.
+## Security notice
 
-## Project layout
+* VNC and code-server listen on **localhost only**.
+* Browser sandboxes are **on by default**; disabling them is opt-in and risky (see `SECURITY.md`).
+* No secrets live in this repo. Passwords and API keys are prompted at runtime and stored with `600`.
+* The optional AI helper sends your prompts to an external provider; that leaves your phone and may
+  cost money.
+* Direct downloads (code-server) are fetched over HTTPS; the installer prints the SHA-256 but cannot
+  verify it against a publisher checksum.
 
-```
+## Project structure
+
+```text
 MobileLinux/
-├── .github/workflows/static-checks.yml   shell syntax + ShellCheck (no Android testing)
-├── assets/
-├── configs/{profiles,vnc,chromium}/
+├── .github/workflows/      shellcheck.yml, release.yml
+├── assets/                 banners/ and logos/
+├── configs/
+│   ├── chromium/flags.conf
+│   ├── profiles/           low.conf, mid.conf, high.conf
+│   ├── termux/colors.properties
+│   ├── vnc/xstartup
+│   └── vscode/             settings.json, extensions.txt
 ├── scripts/
-│   ├── install.sh  select-profile.sh  setup-vnc.sh  shell.sh  uninstall.sh  ai-assistant.sh
-│   ├── lib/common.sh
-│   └── guest/{provision,user-setup,install-apps,install-code-server,vncctl}.sh, mobilelinux-chromium
-├── .env.example  .gitignore  LICENSE  README.md  SECURITY.md
+│   ├── install.sh          master installer (Termux)
+│   ├── mld.sh              the `mld` command
+│   ├── setup-vnc.sh        VNC + desktop setup/runtime (Debian)
+│   ├── setup-theme.sh      optional Termux theme (apply/restore)
+│   ├── diagnose.sh         local diagnostics
+│   ├── ai-assistant.sh     optional AI helper
+│   ├── uninstall.sh
+│   ├── lib/                common.sh (logging, redaction), ui.sh (logo, spinner, screens)
+│   └── guest/              provision.sh, install-apps.sh, verify.sh, browser-sandbox.sh,
+│                           mld-code.sh, sync-in.sh
+├── .env.example  .gitignore  .gitattributes
+└── LICENSE  README.md  SECURITY.md
 ```
+
+## Uninstall
+
+```bash
+mld uninstall
+```
+
+Removes the launcher and project state and, only if you type `DELETE`, the Debian environment
+(including everything in it). It offers to restore your Termux colours. The log and theme backups
+are kept.
+
+## Contributing
+
+1. Fork and create a feature branch.
+2. Run `shellcheck -x -S warning scripts/*.sh scripts/*/*.sh`.
+3. Open a pull request describing the change and the device you tested on.
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Copyright rakib2313. Source: <https://github.com/rakib2313/MobileLinux>
+Released under the [MIT License](LICENSE).

@@ -1,31 +1,48 @@
-# Secrets and local configuration
+# --- Secrets & credentials (never commit) ---
 .env
 .env.*
 !.env.example
-*.env
-!.env.example
-ai.env
-config.env
 *.key
 *.pem
-*.token
-*passwd*
-.vnc/
-.config/
+*.p12
+*.pfx
+ai.env
+.vncpw
+passwd
+config.yaml
+secrets/
+credentials*
 
-# Logs, caches, temporary files
+# --- Logs, diagnostics, caches, runtime state ---
 *.log
-*.tmp
-*.bak
-*.mobilelinux.new
-*.swp
+logs/
+mld-diagnostics-*.txt
 .cache/
+.mld/
+.mld-src/
+run/
+handoff/
+status/
+*.pid
+*.tmp
+*.swp
+*~
+
+# --- Build artifacts ---
+dist/
+build/
+*.zip
+*.tar.gz
+
+# --- Language / tool noise ---
+node_modules/
 __pycache__/
 *.pyc
-node_modules/
+.venv/
+venv/
 
-# Generated archives and backups
-*.zip
-*.tar
-*.tar.gz
-*-backup.tar.gz
+# --- Editors / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

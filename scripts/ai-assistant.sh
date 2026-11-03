@@ -1,133 +1,281 @@
 #!/usr/bin/env bash
-# Optional AI helper (curl + jq). Works in Termux or in the Debian guest. NOTHING else in MobileLinux needs it.
-#
-# Usage:
-#   bash scripts/ai-assistant.sh [-y] "your question"
-#   cat main.py | bash scripts/ai-assistant.sh [-y] "explain this code"
-#
-# PRIVACY / COST: the prompt AND any piped input are sent over the network to the endpoint you configure.
-# Do not send secrets or private code you are not willing to share with that provider. API calls may be
-# billed by the provider. You need network access.
-#
-# Supported protocol (only one, deliberately): "openai-chat" = HTTP POST of JSON
-#   {"model": "...", "messages": [{"role":"system"?...}, {"role":"user","content":"..."}], "max_tokens"?: N}
-#   with header "Authorization: Bearer <key>", response read from .choices[0].message.content.
-# Many providers/local servers offer a compatible endpoint, but NOT all do; check yours.
-#
-# Configuration (environment variables, or ~/.config/mobilelinux/ai.env with chmod 600; env wins):
-#   AI_API_ENDPOINT   full URL of the chat-completions endpoint (https://, or http:// for localhost only)
-#   AI_MODEL          model name (no default on purpose)
-#   AI_API_KEY        API key (never put it in the URL; never commit it)
-#   AI_API_FORMAT     must be "openai-chat" (default)
-#   AI_ALLOW_NO_KEY   set to 1 for a local server that needs no key
-#   AI_MAX_TOKENS     optional integer limit      AI_SYSTEM_PROMPT  optional system message
-#   AI_TIMEOUT        seconds, default 120        AI_ASSUME_YES=1   same as -y (skip the confirmation)
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# =============================================================================
+# ai-assistant.sh - optional CLI coding helper for beginners
+#   ai-assistant configure          choose provider/model, store API key (mode 600)
+#   ai-assistant ask "question"     one-off question (or pipe text in)
+#   ai-assistant chat               interactive conversation
+#   ai-assistant fix <command...>   run a command and explain/fix its error
+#   ai-assistant status             show current (non-secret) settings
+# PRIVACY: prompts (and, for `fix`, the last lines of command output) are sent to
+# the provider you configure. That data leaves your phone and may cost money.
+# Providers: "anthropic" (Anthropic Messages API) or "openai" (any
+# OpenAI-compatible /chat/completions endpoint, incl. local servers).
+# The API key is never hardcoded: it is prompted for at runtime and stored in
+# ~/.config/mld/ai.env, or taken from the MLD_AI_API_KEY environment variable.
+# =============================================================================
+set -Eeuo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=lib/common.sh
-source "$SCRIPT_DIR/lib/common.sh"
-ml_install_traps
+. "$SCRIPT_DIR/lib/common.sh"
+mld_enable_traps
 
-usage() { sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/mld"
+CONF_FILE="$CONF_DIR/ai.env"
 
-ASSUME_YES="${AI_ASSUME_YES:-0}"
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    -y|--yes) ASSUME_YES=1; shift ;;
-    -h|--help) usage; exit 0 ;;
-    --) shift; break ;;
-    -*) ml_die "Unknown option: $1" 2 ;;
-    *) break ;;
+SYSTEM_PROMPT="You are a friendly, concise coding mentor for beginner web developers who work on a small phone screen. Explain errors in plain language, give the exact fix as a short code block, and avoid long lectures. Prefer HTML, CSS, JavaScript, Node.js, Python and PHP examples. Never ask for or repeat secrets."
+
+read -r -d '' PY_CLIENT <<'PYEOF' || true
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+provider = os.environ.get("MLD_AI_PROVIDER", "anthropic")
+model = os.environ.get("MLD_AI_MODEL", "")
+base = os.environ.get("MLD_AI_BASE_URL", "").rstrip("/")
+key = os.environ.get("MLD_AI_API_KEY", "")
+system = os.environ.get("MLD_AI_SYSTEM", "")
+hist_path = sys.argv[1]
+
+user_msg = sys.stdin.read().strip()
+if not user_msg:
+    sys.exit("Empty prompt.")
+
+try:
+    with open(hist_path, "r", encoding="utf-8") as fh:
+        history = json.load(fh)
+    if not isinstance(history, list):
+        history = []
+except (OSError, ValueError):
+    history = []
+
+history = history[-20:]
+while history and history[0].get("role") != "user":
+    history.pop(0)
+history.append({"role": "user", "content": user_msg})
+
+headers = {
+    "content-type": "application/json",
+    "user-agent": "MobileLinux/2.0",
+}
+if provider == "anthropic":
+    url = (base or "https://api.anthropic.com") + "/v1/messages"
+    headers["x-api-key"] = key
+    headers["anthropic-version"] = "2023-06-01"
+    body = {"model": model, "max_tokens": 1024, "system": system, "messages": history}
+else:
+    url = (base or "https://api.openai.com/v1") + "/chat/completions"
+    if key:
+        headers["authorization"] = "Bearer " + key
+    body = {"model": model, "messages": [{"role": "system", "content": system}] + history}
+
+req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
+try:
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        data = json.load(resp)
+except urllib.error.HTTPError as exc:
+    detail = exc.read().decode("utf-8", "replace")[:500]
+    sys.exit("API error %s: %s" % (exc.code, detail))
+except urllib.error.URLError as exc:
+    sys.exit("Network error: %s" % (exc.reason,))
+except (OSError, ValueError) as exc:
+    sys.exit("Request failed: %s" % (exc,))
+
+try:
+    if provider == "anthropic":
+        reply = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+    else:
+        reply = data["choices"][0]["message"]["content"]
+except (KeyError, IndexError, TypeError):
+    sys.exit("Unexpected API response format.")
+
+history.append({"role": "assistant", "content": reply})
+fd = os.open(hist_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w", encoding="utf-8") as fh:
+    json.dump(history, fh)
+
+print(reply)
+PYEOF
+
+usage() {
+  cat <<'EOF'
+Usage: ai-assistant <command>
+  configure          Choose provider/model and store your API key securely
+  ask "question"     Ask one question (or: echo "..." | ai-assistant ask)
+  chat               Interactive chat (/new, /help, /exit)
+  fix <command...>   Run a command, then get a plain-language fix for its error
+  status             Show current settings (the key is never printed)
+
+Privacy: your prompts leave this phone and go to the provider you configured.
+This may incur costs on your account. Do not paste passwords or keys.
+EOF
+}
+
+is_local_base() {
+  case "${MLD_AI_BASE_URL:-}" in
+    http://localhost*|http://127.0.0.1*) return 0 ;;
+    *) return 1 ;;
   esac
-done
-[[ $# -ge 1 ]] || { usage >&2; ml_die "Missing prompt." 2; }
-PROMPT="$*"
+}
 
-ml_require curl jq
-AI_CONFIG_FILE="${AI_CONFIG_FILE:-$ML_CONFIG_DIR/ai.env}"
-if [[ -f "$AI_CONFIG_FILE" ]]; then
-  perms="$(stat -c '%a' "$AI_CONFIG_FILE" 2>/dev/null || echo "")"
-  if [[ -n "$perms" && "$perms" != 600 && "$perms" != 400 ]]; then
-    ml_warn "$AI_CONFIG_FILE has permissions $perms; run: chmod 600 \"$AI_CONFIG_FILE\""
-  fi
-fi
-ml_load_env_file "$AI_CONFIG_FILE" '^AI_'
-
-: "${AI_API_FORMAT:=openai-chat}" "${AI_TIMEOUT:=120}"
-[[ "$AI_API_FORMAT" == openai-chat ]] || ml_die "Unsupported AI_API_FORMAT '$AI_API_FORMAT' (only 'openai-chat' is implemented)."
-[[ -n "${AI_API_ENDPOINT:-}" ]] || ml_die "AI_API_ENDPOINT is not set. See: bash scripts/ai-assistant.sh --help"
-[[ -n "${AI_MODEL:-}" ]] || ml_die "AI_MODEL is not set. See: bash scripts/ai-assistant.sh --help"
-[[ "$AI_TIMEOUT" =~ ^[0-9]+$ ]] || ml_die "AI_TIMEOUT must be an integer."
-if [[ -n "${AI_MAX_TOKENS:-}" && ! "${AI_MAX_TOKENS}" =~ ^[0-9]+$ ]]; then
-  ml_die "AI_MAX_TOKENS must be an integer."
-fi
-if [[ "${AI_ALLOW_NO_KEY:-0}" != 1 ]]; then
-  [[ -n "${AI_API_KEY:-}" ]] || ml_die "AI_API_KEY is not set (or set AI_ALLOW_NO_KEY=1 for a keyless local server)."
-  if [[ "$AI_API_KEY" == *$'\n'* || "$AI_API_KEY" == *'"'* || "$AI_API_KEY" == *'\'* ]]; then
-    ml_die "AI_API_KEY contains characters that are not allowed (newline, quote or backslash)."
-  fi
-fi
-if ! [[ "$AI_API_ENDPOINT" =~ ^https:// || "$AI_API_ENDPOINT" =~ ^http://(localhost|127\.0\.0\.1|\[::1\])([:/]|$) ]]; then
-  ml_die "AI_API_ENDPOINT must start with https:// (plain http:// is accepted for localhost only)."
-fi
-host="${AI_API_ENDPOINT#*://}"
-host="${host%%/*}"
-host="${host##*@}"
-
-content="$PROMPT"
-if [[ ! -t 0 ]]; then
-  stdin_data="$(cat)"
-  if [[ -n "$stdin_data" ]]; then
-    content="$PROMPT"$'\n\n'"$stdin_data"
-  fi
-fi
-
-bytes="${#content}"
-if [[ "$ASSUME_YES" != 1 ]]; then
-  if [[ -t 0 ]]; then
-    read -r -p "Send about $bytes characters to '$host' (model: $AI_MODEL)? [y/N] " ans
-    [[ "$ans" == [yY] || "$ans" == [yY][eE][sS] ]] || ml_die "Cancelled. Nothing was sent." 1
+load_config() {
+  mld_load_env_file "$CONF_FILE"
+  export MLD_AI_PROVIDER="${MLD_AI_PROVIDER:-anthropic}"
+  export MLD_AI_BASE_URL="${MLD_AI_BASE_URL:-}"
+  export MLD_AI_API_KEY="${MLD_AI_API_KEY:-}"
+  if [ "$MLD_AI_PROVIDER" = "anthropic" ]; then
+    export MLD_AI_MODEL="${MLD_AI_MODEL:-claude-haiku-5-5}"
   else
-    ml_die "Input came from a pipe, so no confirmation is possible. Re-run with -y to confirm sending data to '$host'."
+    export MLD_AI_MODEL="${MLD_AI_MODEL:-}"
   fi
-else
-  ml_info "Sending about $bytes characters to '$host' (model: $AI_MODEL)."
-fi
-
-ml_mktemp REQ_FILE
-ml_mktemp RESP_FILE
-jq -n --arg model "$AI_MODEL" --arg sys "${AI_SYSTEM_PROMPT:-}" --arg user "$content" --arg mt "${AI_MAX_TOKENS:-}" '
-  {model: $model,
-   messages: ((if $sys != "" then [{role:"system", content:$sys}] else [] end) + [{role:"user", content:$user}])}
-  | if $mt != "" then . + {max_tokens: ($mt | tonumber)} else . end' >"$REQ_FILE"
-
-do_request() { # extra curl args via "$@"; the key is passed through a file descriptor, not argv
-  curl --silent --show-error --max-time "$AI_TIMEOUT" --output "$RESP_FILE" --write-out '%{http_code}' \
-    -H 'Content-Type: application/json' --data-binary @"$REQ_FILE" "$@" "$AI_API_ENDPOINT"
 }
 
-scrub() { # remove the key from anything we print
-  local s="$1"
-  if [[ -n "${AI_API_KEY:-}" ]]; then
-    s="${s//"$AI_API_KEY"/[REDACTED]}"
+cmd_configure() {
+  local provider model base key def_base def_model re_https re_local
+  have_cmd python3 || die "python3 is required."
+  mld_tty >/dev/null || die "configure needs an interactive terminal."
+  re_https='^https://[^[:space:]]+$'
+  re_local='^http://(localhost|127\.0\.0\.1)(:[0-9]+)?(/[^[:space:]]*)?$'
+  log_warn "Your prompts will be sent to the provider you choose and may cost money."
+  mld_confirm_strict "Continue?" n || die "Not configured."
+  mld_prompt "Provider (anthropic, or 'openai' for OpenAI-compatible endpoints)" "${MLD_AI_PROVIDER:-anthropic}" provider
+  case "$provider" in
+    anthropic) def_base="https://api.anthropic.com"; def_model="claude-haiku-5-5" ;;
+    openai)    def_base="https://api.openai.com/v1"; def_model="${MLD_AI_MODEL:-gpt-4o-mini}" ;;
+    *) die "Provider must be 'anthropic' or 'openai'." ;;
+  esac
+  mld_prompt "Model" "$def_model" model
+  mld_prompt "API base URL" "$def_base" base
+  if ! [[ "$base" =~ $re_https || "$base" =~ $re_local ]]; then
+    die "Base URL must start with https:// (or http://localhost for a local server)."
   fi
-  printf '%s' "$s"
+  [ -n "$model" ] || die "A model name is required."
+  mld_prompt_secret "API key (input hidden; leave empty only for a local server)" key || die "No terminal."
+  if [ -z "$key" ] && ! [[ "$base" =~ $re_local ]]; then
+    die "An API key is required for remote providers."
+  fi
+  ( umask 077; mkdir -p "$CONF_DIR" )
+  chmod 700 "$CONF_DIR"
+  (
+    umask 077
+    {
+      printf '# Managed by ai-assistant configure. Never commit this file.\n'
+      printf 'MLD_AI_PROVIDER=%s\n' "$provider"
+      printf 'MLD_AI_MODEL=%s\n' "$model"
+      printf 'MLD_AI_BASE_URL=%s\n' "$base"
+      printf 'MLD_AI_API_KEY=%s\n' "$key"
+    } >"$CONF_FILE"
+  )
+  chmod 600 "$CONF_FILE"
+  key=""
+  log_ok "Saved to $CONF_FILE (mode 600)."
 }
 
-curl_rc=0
-if [[ "${AI_ALLOW_NO_KEY:-0}" == 1 ]]; then
-  http_code="$(do_request)" || curl_rc=$?
-else
-  http_code="$(do_request --config <(printf 'header = "Authorization: Bearer %s"\n' "$AI_API_KEY"))" || curl_rc=$?
-fi
-if ((curl_rc != 0)); then
-  ml_die "Network request to '$host' failed (curl exit $curl_rc). Check connectivity, endpoint and AI_TIMEOUT."
-fi
+ensure_ready() {
+  have_cmd python3 || die "python3 is required."
+  load_config
+  if [ -z "$MLD_AI_API_KEY" ] && ! is_local_base; then
+    if mld_tty >/dev/null; then
+      log_info "The AI assistant is not configured yet - let's set it up."
+      cmd_configure
+      unset MLD_AI_PROVIDER MLD_AI_MODEL MLD_AI_BASE_URL MLD_AI_API_KEY
+      load_config
+    else
+      die "Not configured. Run: ai-assistant configure   (or set MLD_AI_API_KEY)"
+    fi
+  fi
+  [ -n "$MLD_AI_MODEL" ] || die "No model set. Run: ai-assistant configure"
+}
 
-if [[ ! "$http_code" =~ ^2[0-9][0-9]$ ]]; then
-  msg="$(jq -r '.error.message // .error // .message // empty' "$RESP_FILE" 2>/dev/null | head -c 300 || true)"
-  ml_die "Provider returned HTTP $http_code. ${msg:+Message: $(scrub "$msg")}"
-fi
+ai_call() { # history_file ; prompt on stdin
+  MLD_AI_SYSTEM="$SYSTEM_PROMPT" python3 -c "$PY_CLIENT" "$1"
+}
 
-answer="$(jq -r '.choices[0].message.content // empty' "$RESP_FILE" 2>/dev/null || true)"
-[[ -n "$answer" ]] || ml_die "The response did not contain .choices[0].message.content. Is your endpoint 'openai-chat' compatible?"
-printf '%s\n' "$answer"
+new_hist() { # sets REPLY_HIST
+  REPLY_HIST="$(mktemp)"
+  MLD_TMP_FILES+=("$REPLY_HIST")
+  : >"$REPLY_HIST"
+}
+
+cmd_ask() {
+  local prompt
+  if [ $# -gt 0 ]; then
+    prompt="$*"
+  elif [ ! -t 0 ]; then
+    prompt="$(cat)"
+  else
+    die "Usage: ai-assistant ask \"your question\""
+  fi
+  ensure_ready
+  new_hist
+  printf '%s' "$prompt" | ai_call "$REPLY_HIST"
+}
+
+cmd_chat() {
+  local line
+  mld_tty >/dev/null || die "chat needs an interactive terminal."
+  ensure_ready
+  new_hist
+  printf '%sAI coding helper%s (%s / %s) - /new, /help, /exit\n' \
+    "$C_BOLD" "$C_RESET" "$MLD_AI_PROVIDER" "$MLD_AI_MODEL" >&2
+  while :; do
+    IFS= read -r -e -p 'you> ' line || break
+    case "$line" in
+      '') continue ;;
+      /exit|/quit|exit|quit) break ;;
+      /new) : >"$REPLY_HIST"; log_info "Started a new conversation."; continue ;;
+      /help) printf 'Commands: /new  /exit.  Paste code or error messages freely.\n' >&2; continue ;;
+    esac
+    if ! printf '%s' "$line" | ai_call "$REPLY_HIST"; then
+      log_warn "That request failed - check your connection or run: ai-assistant configure"
+    fi
+  done
+}
+
+cmd_fix() {
+  [ $# -gt 0 ] || die "Usage: ai-assistant fix <command> [args...]"
+  local out rc=0 prompt
+  out="$("$@" 2>&1)" || rc=$?
+  printf '%s\n' "$out" | tail -n 40
+  if [ "$rc" -eq 0 ]; then
+    log_ok "The command succeeded (exit 0) - nothing to fix."
+    return 0
+  fi
+  ensure_ready
+  log_info "Exit code ${rc}. Sending the last lines of output to '${MLD_AI_PROVIDER}' (leaves this phone; may cost money) ..."
+  prompt="I ran this command: $*
+Exit code: ${rc}
+Output (last lines):
+$(printf '%s\n' "$out" | tail -n 60 | cut -c1-400 | mld_redact)
+
+Explain what went wrong in simple terms and give the exact fix."
+  new_hist
+  printf '%s' "$prompt" | ai_call "$REPLY_HIST"
+}
+
+cmd_status() {
+  load_config
+  printf 'provider : %s\nmodel    : %s\nbase url : %s\nkey set  : %s\nconfig   : %s\n' \
+    "$MLD_AI_PROVIDER" "${MLD_AI_MODEL:-<unset>}" "${MLD_AI_BASE_URL:-<default>}" \
+    "$([ -n "$MLD_AI_API_KEY" ] && echo yes || echo no)" "$CONF_FILE"
+}
+
+main() {
+  local cmd="${1:-}"
+  if [ $# -gt 0 ]; then shift; fi
+  case "$cmd" in
+    configure) cmd_configure ;;
+    ask)       cmd_ask "$@" ;;
+    chat|"")
+      if [ -z "$cmd" ] && ! mld_tty >/dev/null; then usage; exit 1; fi
+      cmd_chat ;;
+    fix)       cmd_fix "$@" ;;
+    status)    cmd_status ;;
+    -h|--help|help) usage ;;
+    *) usage; exit 1 ;;
+  esac
+}
+
+main "$@"

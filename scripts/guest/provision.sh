@@ -1,55 +1,182 @@
 #!/usr/bin/env bash
-# Guest provisioning. RUN IN: Debian guest, as root (called by scripts/install.sh).
-# Installs a minimal XFCE desktop + TigerVNC and creates the unprivileged desktop user.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# =============================================================================
+# provision.sh - base provisioning of the Debian guest (runs as root in PRoot)
+#   network check, apt tuning for PRoot / mobile networks, base packages, locale,
+#   non-root desktop user, performance profile, Chromium flags, launchers.
+# Every command that could block is time-limited, and nothing here reads the keyboard.
+# Env: MLD_USER (default dev), MLD_PROFILE (low|mid|high), MLD_CONFIGS_ONLY=1,
+#      MLD_FULL_UPGRADE=1 (also run apt upgrade), MLD_APT_TIMEOUT (seconds per apt call)
+# =============================================================================
+set -Eeuo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=../lib/common.sh
-source "$SCRIPT_DIR/../lib/common.sh"
-ml_install_traps
+. "$SCRIPT_DIR/../lib/common.sh"
+mld_enable_traps
 
-[[ "$(id -u)" -eq 0 ]] || ml_die "provision.sh must run as root inside the Debian guest."
-[[ -f /etc/debian_version ]] || ml_die "This script expects a Debian-based guest."
-ml_require apt-get apt-cache useradd
-ml_load_config
-ml_resolve_profile
-ml_load_profile "$ML_PROFILE_RESOLVED"
-export DEBIAN_FRONTEND=noninteractive
+exec </dev/null
+mld_noninteractive_env
+OPT=/opt/mld
+MLD_USER="${MLD_USER:-dev}"
+MLD_PROFILE="${MLD_PROFILE:-low}"
 
-ml_step "Updating package lists (guest)"
-apt-get update || ml_die "apt-get update failed. Check the network. If you see sandbox/seteuid errors under PRoot, see README Troubleshooting."
+[ "$(id -u)" -eq 0 ] || die "provision.sh must run as root inside the Debian guest."
+[ -f /etc/debian_version ] || die "This script must run inside the Debian guest."
+[[ "$MLD_USER" =~ ^[a-z][a-z0-9_-]{0,30}$ ]] || die "Invalid user name: $MLD_USER"
+[[ "$MLD_PROFILE" =~ ^(low|mid|high)$ ]] || die "Invalid profile: $MLD_PROFILE"
 
-REQUIRED_PACKAGES=(
-  ca-certificates procps iproute2 dbus-x11 xauth x11-xserver-utils xdg-utils
-  tigervnc-standalone-server tigervnc-common tigervnc-tools
-  xfce4-session xfwm4 xfdesktop4 xfce4-panel xfce4-settings xfce4-appfinder
-  xfce4-terminal thunar mousepad xfconf
-  fonts-dejavu-core adwaita-icon-theme
+BASE_PKGS=(
+  ca-certificates curl wget git openssl locales tzdata procps psmisc
+  dbus dbus-x11 xauth x11-xserver-utils xclip xdg-utils xdg-user-dirs
+  nano less unzip zip jq htop bash-completion
 )
 
-ml_step "Checking package availability"
-missing=()
-for pkg in "${REQUIRED_PACKAGES[@]}"; do
-  ml_apt_available "$pkg" || missing+=("$pkg")
-done
-if ((${#missing[@]} > 0)); then
-  ml_die "These required packages are not available in this Debian guest: ${missing[*]}. Try 'apt-get update' again or check the release."
-fi
+check_network() {
+  local host=deb.debian.org ip
+  if ! getent hosts "$host" >/dev/null 2>&1; then
+    log_warn "DNS lookup failed - switching to public DNS servers (1.1.1.1, 8.8.8.8)."
+    printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' >/etc/resolv.conf
+  fi
+  ip="$(getent ahostsv4 "$host" 2>/dev/null | awk 'NR==1 {print $1}' || true)"
+  [ -n "$ip" ] || die "Cannot resolve ${host}. Check your internet connection (try Wi-Fi) and re-run the installer."
+  if ! retry 3 3 timeout 20 bash -c "exec 3<>/dev/tcp/${ip}/80"; then
+    die "Cannot connect to ${host} (${ip}:80). Check your internet connection (try Wi-Fi) and re-run the installer."
+  fi
+  log_ok "Network reachable (${host} -> ${ip})"
+}
 
-ml_step "Installing XFCE + TigerVNC (this can take a while)"
-apt-get install -y --no-install-recommends "${REQUIRED_PACKAGES[@]}" \
-  || ml_die "Package installation failed. Re-run scripts/install.sh; if it persists, check free storage (df -h) and network."
+configure_apt() {
+  mkdir -p /etc/apt/apt.conf.d /etc/dpkg/dpkg.cfg.d /usr/sbin
+  cat >/etc/apt/apt.conf.d/99mld <<'EOF'
+// PRoot + mobile-network friendly settings (managed by MobileLinux)
+APT::Sandbox::User "root";
+APT::Install-Recommends "false";
+APT::Install-Suggests "false";
+APT::Color "0";
+Acquire::Retries "3";
+Acquire::Languages "none";
+Acquire::ForceIPv4 "true";
+Acquire::http::Timeout "30";
+Acquire::https::Timeout "30";
+Acquire::http::Pipeline-Depth "0";
+Dpkg::Use-Pty "0";
+Dpkg::Options { "--force-confdef"; "--force-confold"; };
+EOF
+  printf 'force-unsafe-io\n' >/etc/dpkg/dpkg.cfg.d/99mld
+  # No service auto-start inside PRoot (there is no init system).
+  printf '#!/bin/sh\nexit 101\n' >/usr/sbin/policy-rc.d
+  chmod 755 /usr/sbin/policy-rc.d
+}
 
-if [[ -n "${ML_EXTRA_PACKAGES// /}" ]]; then
-  ml_step "Installing profile extras ($ML_PROFILE_RESOLVED): $ML_EXTRA_PACKAGES"
-  # shellcheck disable=SC2086  # word splitting of the package list is intended
-  ml_apt_install_optional $ML_EXTRA_PACKAGES
-fi
+install_base() {
+  log_info "Updating package lists ..."
+  retry 3 5 mld_apt update
+  if [ "${MLD_FULL_UPGRADE:-0}" = "1" ]; then
+    log_info "Upgrading installed packages ..."
+    retry 3 5 mld_apt -y upgrade
+  fi
+  log_info "Installing base packages (${#BASE_PKGS[@]}) ..."
+  retry 3 5 mld_apt install -y --no-install-recommends "${BASE_PKGS[@]}"
+}
 
-ml_step "Desktop user '$ML_USER'"
-if id "$ML_USER" >/dev/null 2>&1; then
-  ml_ok "User '$ML_USER' already exists; leaving it unchanged."
-else
-  useradd -m -s /bin/bash "$ML_USER" || ml_die "Could not create user '$ML_USER'."
-  ml_ok "Created user '$ML_USER' (no password; log in via proot-distro --user)."
-fi
+configure_locale() {
+  if [ -f /etc/locale.gen ]; then
+    sed -i 's/^# *\(en_US.UTF-8 UTF-8\)/\1/' /etc/locale.gen
+    timeout -k 10 900 locale-gen >/dev/null </dev/null
+  fi
+  printf 'LANG=en_US.UTF-8\n' >/etc/default/locale
+}
 
-ml_ok "Provisioning complete (profile: $ML_PROFILE_RESOLVED)."
+create_user() {
+  if id "$MLD_USER" >/dev/null 2>&1; then
+    log_info "User '$MLD_USER' already exists - keeping it and its files."
+  else
+    timeout 120 useradd -m -s /bin/bash "$MLD_USER"
+    log_ok "Created user '$MLD_USER'"
+  fi
+  timeout 60 passwd -l "$MLD_USER" >/dev/null 2>&1 || true
+  local g
+  for g in audio video; do
+    if getent group "$g" >/dev/null 2>&1; then
+      timeout 60 usermod -aG "$g" "$MLD_USER" || true
+    fi
+  done
+  chmod 750 "/home/$MLD_USER" || true
+}
+
+install_configs() {
+  mkdir -p /etc/mld /etc/chromium.d
+  install -m 644 "$OPT/configs/profiles/${MLD_PROFILE}.conf" /etc/mld/profile.conf
+  install -m 644 "$OPT/configs/chromium/flags.conf" /etc/mld/chromium-flags.conf
+  # Browser sandbox stays ON unless the user opts out (mld browser-sandbox on).
+  if [ ! -f /etc/mld/browser.conf ]; then
+    printf '# MLD_BROWSER_NOSANDBOX=1 disables browser sandboxes (risky). Default 0.\nMLD_BROWSER_NOSANDBOX=0\n' >/etc/mld/browser.conf
+    chmod 644 /etc/mld/browser.conf
+  fi
+  cat >/etc/chromium.d/99-mld <<'EOF'
+# Managed by MobileLinux: low-memory Chromium flags. --no-sandbox is added ONLY
+# when /etc/mld/browser.conf contains MLD_BROWSER_NOSANDBOX=1 (explicit opt-in).
+MLD_BASE_FLAGS="$(grep -Ev '^[[:space:]]*(#|$)' /etc/mld/chromium-flags.conf | tr '\n' ' ')"
+MLD_EXTRA_FLAGS="$( . /etc/mld/profile.conf; printf '%s' "${MLD_CHROMIUM_EXTRA:-}" )"
+MLD_SANDBOX_FLAG=""
+MLD_BROWSER_NOSANDBOX=0
+if [ -r /etc/mld/browser.conf ]; then . /etc/mld/browser.conf; fi
+if [ "${MLD_BROWSER_NOSANDBOX:-0}" = "1" ]; then MLD_SANDBOX_FLAG="--no-sandbox"; fi
+export CHROMIUM_FLAGS="${CHROMIUM_FLAGS:-} ${MLD_BASE_FLAGS} ${MLD_EXTRA_FLAGS} ${MLD_SANDBOX_FLAG}"
+EOF
+  chmod 644 /etc/chromium.d/99-mld
+  log_ok "Profile '${MLD_PROFILE}' and Chromium flags installed"
+}
+
+install_launchers() {
+  mkdir -p /usr/local/bin /usr/share/applications
+  ln -sf "$OPT/scripts/ai-assistant.sh" /usr/local/bin/ai-assistant
+  ln -sf "$OPT/scripts/guest/mld-code.sh" /usr/local/bin/mld-code
+  ln -sf "$OPT/scripts/setup-vnc.sh" /usr/local/bin/mld-vnc
+
+  cat >/usr/share/applications/mld-code.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=VS Code (code-server)
+Comment=Web-based VS Code with web-dev extensions
+Exec=mld-code
+Icon=applications-development
+Terminal=false
+Categories=Development;IDE;TextEditor;
+EOF
+  cat >/usr/share/applications/mld-ai.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=AI Coding Helper
+Comment=Ask for help with errors and code (optional, needs your own API key)
+Exec=xfce4-terminal --title="AI Coding Helper" --command="ai-assistant chat"
+Icon=help-browser
+Terminal=false
+Categories=Development;Utility;
+EOF
+  chmod 644 /usr/share/applications/mld-code.desktop /usr/share/applications/mld-ai.desktop
+  if have_cmd update-desktop-database; then update-desktop-database /usr/share/applications >/dev/null 2>&1 || true; fi
+  chmod -R a+rX "$OPT"
+}
+
+main() {
+  log_step "Provisioning Debian guest (profile: ${MLD_PROFILE})"
+  if [ "${MLD_CONFIGS_ONLY:-0}" != "1" ]; then
+    log_info "[1/5] Checking network access"
+    check_network
+    log_info "[2/5] Configuring apt for PRoot and mobile networks"
+    configure_apt
+    mld_apt_recover
+    log_info "[3/5] Installing base packages"
+    install_base
+    log_info "[4/5] Configuring locale"
+    configure_locale
+    log_info "[5/5] Creating user '${MLD_USER}'"
+    create_user
+  fi
+  install_configs
+  install_launchers
+  log_ok "Provisioning complete"
+}
+
+main "$@"

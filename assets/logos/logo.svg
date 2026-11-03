@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="MobileLinux logo">
+  <rect width="256" height="256" rx="48" fill="#10141c"/>
+  <rect x="80" y="40" width="96" height="176" rx="16" fill="none" stroke="#5ee6c8" stroke-width="10"/>
+  <text x="128" y="144" font-family="monospace" font-size="44" fill="#7ee787" text-anchor="middle">&gt;_</text>
+</svg>

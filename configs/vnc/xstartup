@@ -1,30 +1,40 @@
 #!/bin/sh
-# MobileLinux XFCE session startup for TigerVNC. Runs INSIDE the Debian guest.
-# Installed to ~/.vnc/xstartup by scripts/guest/user-setup.sh (an existing file is never overwritten).
-
+# =============================================================================
+# xstartup - lightweight XFCE4 session for TigerVNC (installed to ~/.vnc/xstartup)
+# =============================================================================
 unset SESSION_MANAGER
 unset DBUS_SESSION_BUS_ADDRESS
 
 export XDG_SESSION_TYPE=x11
 export XDG_CURRENT_DESKTOP=XFCE
-export XDG_CONFIG_DIRS="${XDG_CONFIG_DIRS:-/etc/xdg}"
-export NO_AT_BRIDGE=1
-# PRoot has no GPU acceleration: use software rendering for OpenGL clients.
-export LIBGL_ALWAYS_SOFTWARE=1
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/runtime-$(id -u)}"
+mkdir -p "$XDG_RUNTIME_DIR"
+chmod 700 "$XDG_RUNTIME_DIR"
+export LANG="${LANG:-en_US.UTF-8}"
 
-# systemd is not available, so create a private runtime dir ourselves.
-if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
-  XDG_RUNTIME_DIR="/tmp/runtime-$(id -u)"
-  export XDG_RUNTIME_DIR
+# Software rendering only (no GPU in PRoot) - keep it cheap.
+export LIBGL_ALWAYS_SOFTWARE=1
+export GALLIUM_DRIVER=llvmpipe
+export GDK_BACKEND=x11
+export GSK_RENDERER=cairo
+export NO_AT_BRIDGE=1
+export MOZ_ACCELERATED=0
+
+# Firefox's own sandbox is switched off ONLY if you opted in
+# (mld browser-sandbox on -> /etc/mld/browser.conf).
+MLD_BROWSER_NOSANDBOX=0
+if [ -r /etc/mld/browser.conf ]; then
+  . /etc/mld/browser.conf
 fi
-mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
+if [ "${MLD_BROWSER_NOSANDBOX:-0}" = "1" ]; then
+  export MOZ_FAKE_NO_SANDBOX=1
+  export MOZ_DISABLE_CONTENT_SANDBOX=1
+  export MOZ_DISABLE_RDD_SANDBOX=1
+fi
 
 if [ -r "$HOME/.Xresources" ]; then
   xrdb "$HOME/.Xresources"
 fi
+xsetroot -solid '#10141c' 2>/dev/null || true
 
-if command -v dbus-launch >/dev/null 2>&1; then
-  exec dbus-launch --exit-with-session startxfce4
-else
-  exec startxfce4
-fi
+exec dbus-launch --exit-with-session startxfce4
