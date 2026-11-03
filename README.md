@@ -51,14 +51,34 @@ Firefox ESR, Node.js, Python 3, PHP CLI, Git and VS Code (code-server). It picks
 | VNC app | RealVNC Viewer, bVNC or similar |
 
 ## Install (review first)
+## Install MobileLinux
+
+### 1. Prepare Termux
+
+Install Termux from a supported source, such as F-Droid or the official
+Termux GitHub releases. Open Termux and run:
+
+```bash
+pkg update
+pkg upgrade
+```
 
 Run these **in Termux**:
 
 ```bash
-pkg install -y git
+pkg install git -y 
+```
+```
 git clone https://github.com/rakib2313/MobileLinux.git
+```
+```
 cd MobileLinux
-less scripts/install.sh          # read it first (press q to quit)
+```
+```
+less scripts/install.sh
+```
+# read it first (press q to quit)
+```
 bash scripts/install.sh
 ```
 
